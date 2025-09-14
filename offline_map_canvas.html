@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GPS Canvas Map (Offline)</title>
+  <style>
+    html, body { height: 100%; margin: 0; font-family: Arial, sans-serif; }
+    .container { display: flex; height: 100%; }
+    .map-area { flex: 1; position: relative; background: #e8f4f8; }
+    .sidebar { width: 300px; background: #f8f9fa; padding: 20px; overflow-y: auto; }
+    #canvas { border: 1px solid #ccc; cursor: crosshair; }
+    .info-panel { background: white; padding: 15px; margin: 10px 0; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    .coordinate { font-family: monospace; font-size: 14px; margin: 5px 0; }
+    .status-good { color: #28a745; font-weight: bold; }
+    .status-bad { color: #dc3545; font-weight: bold; }
+    .trail-point { font-size: 12px; padding: 2px 0; border-bottom: 1px solid #eee; }
+    .controls { margin: 10px 0; }
+    .btn { padding: 8px 16px; margin: 5px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; }
+    .btn:hover { background: #0056b3; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="map-area">
+      <canvas id="canvas" width="800" height="600"></canvas>
+      <div style="position: absolute; top: 10px; left: 10px; background: rgba(255,255,255,0.9); padding: 10px; border-radius: 4px;">
+        <div id="status" class="status-bad">Waiting for GPS...</div>
+      </div>
+    </div>
+    
+    <div class="sidebar">
+      <h2>🛰️ GPS Tracker</h2>
+      
+      <div class="info-panel">
+        <h3>Current Position</h3>
+        <div id="current-lat" class="coordinate">Lat: --</div>
+        <div id="current-lon" class="coordinate">Lon: --</div>
+        <div id="current-speed" class="coordinate">Speed: -- km/h</div>
+        <div id="current-time" class="coordinate">Time: --</div>
+      </div>
+      
+      <div class="controls">
+        <button class="btn" onclick="centerMap()">Center on GPS</button>
+        <button class="btn" onclick="clearTrail()">Clear Trail</button>
+        <button class="btn" onclick="zoomIn()">Zoom In</button>
+        <button class="btn" onclick="zoomOut()">Zoom Out</button>
+      </div>
+      
+      <div class="info-panel">
+        <h3>Map Info</h3>
+        <div id="map-center" class="coordinate">Center: 0, 0</div>
+        <div id="map-zoom" class="coordinate">Zoom: 1x</div>
+        <div id="trail-count" class="coordinate">Trail Points: 0</div>
+      </div>
+      
+      <div class="info-panel">
+        <h3>Position Trail</h3>
+        <div id="trail" style="max-height: 200px; overflow-y: auto;"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    let trail = [];
+    let currentPos = null;
+    let mapCenter = { lat: 0, lon: 0 };
+    let zoom = 100000; // meters per pixel
+    let autoCenter = true;
+    
+    function resizeCanvas() {
+      const container = canvas.parentElement;
+      canvas.width = container.clientWidth - 20;
+      canvas.height = container.clientHeight - 20;
+      drawMap();
+    }
+    
+    function latLonToPixel(lat, lon) {
+      const x = canvas.width / 2 + (lon - mapCenter.lon) * 111320 / zoom;
+      const y = canvas.height / 2 - (lat - mapCenter.lat) * 111320 / zoom;
+      return { x, y };
+    }
+    
+    function drawMap() {
+      // Clear canvas
+      ctx.fillStyle = '#e8f4f8';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      // Draw grid
+      ctx.strokeStyle = '#d0d0d0';
+      ctx.lineWidth = 1;
+      
+      const gridSpacing = 50;
+      for (let x = 0; x < canvas.width; x += gridSpacing) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, canvas.height);
+        ctx.stroke();
+      }
+      for (let y = 0; y < canvas.height; y += gridSpacing) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(canvas.width, y);
+        ctx.stroke();
+      }
+      
+      // Draw center crosshair
+      ctx.strokeStyle = '#999';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(canvas.width / 2 - 10, canvas.height / 2);
+      ctx.lineTo(canvas.width / 2 + 10, canvas.height / 2);
+      ctx.moveTo(canvas.width / 2, canvas.height / 2 - 10);
+      ctx.lineTo(canvas.width / 2, canvas.height / 2 + 10);
+      ctx.stroke();
+      
+      // Draw trail
+      if (trail.length > 1) {
+        ctx.strokeStyle = '#007bff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        
+        for (let i = 0; i < trail.length; i++) {
+          const point = latLonToPixel(trail[i].lat, trail[i].lon);
+          if (i === 0) {
+            ctx.moveTo(point.x, point.y);
+          } else {
+            ctx.lineTo(point.x, point.y);
+          }
+        }
+        ctx.stroke();
+        
+        // Draw trail points
+        ctx.fillStyle = '#0056b3';
+        for (let i = 0; i < trail.length; i++) {
+          const point = latLonToPixel(trail[i].lat, trail[i].lon);
+          ctx.beginPath();
+          ctx.arc(point.x, point.y, 3, 0, 2 * Math.PI);
+          ctx.fill();
+        }
+      }
+      
+      // Draw current position
+      if (currentPos) {
+        const point = latLonToPixel(currentPos.lat, currentPos.lon);
+        
+        // Pulsing circle
+        const time = Date.now() / 1000;
+        const pulseRadius = 15 + Math.sin(time * 3) * 5;
+        
+        ctx.fillStyle = 'rgba(255, 0, 0, 0.3)';
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, pulseRadius, 0, 2 * Math.PI);
+        ctx.fill();
+        
+        ctx.fillStyle = '#ff0000';
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, 8, 0, 2 * Math.PI);
+        ctx.fill();
+        
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, 4, 0, 2 * Math.PI);
+        ctx.fill();
+      }
+      
+      // Update info
+      document.getElementById('map-center').textContent = 
+        `Center: ${mapCenter.lat.toFixed(6)}, ${mapCenter.lon.toFixed(6)}`;
+      document.getElementById('map-zoom').textContent = 
+        `Zoom: ${(111320 / zoom).toFixed(1)}x`;
+      document.getElementById('trail-count').textContent = 
+        `Trail Points: ${trail.length}`;
+    }
+    
+    function centerMap() {
+      if (currentPos) {
+        mapCenter = { lat: currentPos.lat, lon: currentPos.lon };
+        autoCenter = true;
+        drawMap();
+      }
+    }
+    
+    function clearTrail() {
+      trail = [];
+      drawMap();
+      updateTrailDisplay();
+    }
+    
+    function zoomIn() {
+      zoom *= 0.5;
+      drawMap();
+    }
+    
+    function zoomOut() {
+      zoom *= 2;
+      drawMap();
+    }
+    
+    function updateTrailDisplay() {
+      const trailDiv = document.getElementById('trail');
+      trailDiv.innerHTML = trail.slice(-20).reverse().map((point, i) => 
+        `<div class="trail-point">${point.time}: ${point.lat.toFixed(6)}, ${point.lon.toFixed(6)}</div>`
+      ).join('');
+    }
+    
+    async function fetchLocation() {
+      try {
+        const resp = await fetch('/location');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        
+        if (data && data.valid && typeof data.lat === 'number' && typeof data.lon === 'number') {
+          // Update status
+          document.getElementById('status').textContent = 'GPS: ACTIVE (Offline Map)';
+          document.getElementById('status').className = 'status-good';
+          
+          // Update current position
+          currentPos = { lat: data.lat, lon: data.lon };
+          
+          // Update info panel
+          document.getElementById('current-lat').textContent = `Lat: ${data.lat.toFixed(6)}`;
+          document.getElementById('current-lon').textContent = `Lon: ${data.lon.toFixed(6)}`;
+          document.getElementById('current-speed').textContent = `Speed: ${data.speed_kmh.toFixed(1)} km/h`;
+          document.getElementById('current-time').textContent = 
+            `Time: ${new Date(data.updated_at * 1000).toLocaleTimeString()}`;
+          
+          // Add to trail
+          const newPoint = {
+            lat: data.lat,
+            lon: data.lon,
+            time: new Date().toLocaleTimeString(),
+            speed: data.speed_kmh
+          };
+          
+          // Only add if moved significantly (> 1 meter)
+          if (trail.length === 0 || 
+              Math.abs(trail[trail.length - 1].lat - data.lat) > 0.00001 ||
+              Math.abs(trail[trail.length - 1].lon - data.lon) > 0.00001) {
+            trail.push(newPoint);
+            if (trail.length > 1000) trail.shift(); // Keep last 1000 points
+            updateTrailDisplay();
+          }
+          
+          // Auto-center on first fix or if enabled
+          if (autoCenter) {
+            mapCenter = { lat: data.lat, lon: data.lon };
+          }
+          
+        } else {
+          document.getElementById('status').textContent = 'GPS: Waiting for fix...';
+          document.getElementById('status').className = 'status-bad';
+        }
+        
+        drawMap();
+        
+      } catch (e) {
+        console.error(e);
+        document.getElementById('status').textContent = 'GPS: Connection Error';
+        document.getElementById('status').className = 'status-bad';
+      }
+    }
+    
+    // Mouse interaction
+    canvas.addEventListener('click', (e) => {
+      autoCenter = false;
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      
+      // Convert pixel to lat/lon
+      const lon = mapCenter.lon + (x - canvas.width / 2) * zoom / 111320;
+      const lat = mapCenter.lat - (y - canvas.height / 2) * zoom / 111320;
+      
+      mapCenter = { lat, lon };
+      drawMap();
+    });
+    
+    // Initialize
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+    setInterval(fetchLocation, 2000);
+    setInterval(drawMap, 100); // Animate pulsing
+    fetchLocation();
+  </script>
+</body>
+</html>
