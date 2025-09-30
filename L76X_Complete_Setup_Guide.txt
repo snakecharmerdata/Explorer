@@ -1,6 +1,7 @@
 ================================================================================
                     COMPLETE SETUP GUIDE: WAVESHARE L76X GPS HAT
                            Raspberry Pi Configuration
+        ******************************************ATTENTION: PLEASE USE A SEPARATE MICRO SD MEMORY CARD FOR THIS PROJECT*********
 ================================================================================
 
 OVERVIEW:
